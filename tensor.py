@@ -41,8 +41,10 @@ class Tensor:
         Dynamically resolve method names to registered functions.
         For example, calling x.mul(y) will resolve to Mul.apply(x, y)
         """
+        func_cls = Function.get_function(name)
+        if func_cls is None:
+            raise AttributeError(f"Function '{name}' is not registered.")
         def method(*args):
-            func_cls = Function.get_function(name)
             return func_cls.apply(self, *args)
         return method
 
@@ -61,18 +63,20 @@ class Function:
             raise ValueError(f"Function '{name}' is not registered.")
         return cls._registry[name]
 
+
     @classmethod
     def apply(cls, *tensors):
-        """Applies tensors to context."""
         ctx = Context()
         output = cls.forward(ctx, *tensors)
         if isinstance(output, Tensor) and output.requires_grad:
-            def backward_fn(grad_output):
-                cls.backward(ctx, grad_output)
-            output._backward = lambda: backward_fn(output.grad)
+            def backward_fn():
+                cls.backward(ctx, output.grad)
+            output._backward = backward_fn
             output._prev = tensors
             output._ctx = ctx
         return output
+
+
 
     @staticmethod
     def forward(ctx, *tensors):

@@ -19,7 +19,10 @@ class Optimizer:
         if name not in cls._registry:
             raise ValueError(f"Optimizer '{name}' is not registered.")
         return cls._registry[name]
-
+    @classmethod
+    def apply(cls, tensors: List[Tensor], lr: float) -> 'Optimizer':
+        return cls(tensors, lr)
+    
     def step(self):
         """Applies the optimizer update step on the initialized tensors."""
         raise NotImplementedError
