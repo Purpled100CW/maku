@@ -114,6 +114,18 @@ class Add(Function):
     
 register('add', Add)
 
+class Sub(Function):
+    @staticmethod
+    def forward(ctx, x, y):
+        ctx.save_for_backward(x, y)
+        return Tensor(x.data - y.data, requires_grad=x.requires_grad or y.requires_grad)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, grad_output
+    
+register('sub', Sub)
+
 class Mul(Function):
     @staticmethod
     def forward(ctx, x, y):
