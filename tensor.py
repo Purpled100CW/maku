@@ -6,7 +6,7 @@ class Tensor:
     def __init__(self, data, requires_grad=False):
         self.data = np.array(data)
         self.requires_grad = requires_grad
-        self.grad = None
+        self.grad = np.zeros_like(self.data)
         self._backward = lambda: None
         self._prev = set()
         self._ctx = None  # To store the context object from Function classes
@@ -28,14 +28,18 @@ class Tensor:
             build_topo(self)
             for tensor in reversed(topo_order):
                 tensor._backward()
-
+    def mean(self):
+        if not self.requires_grad:
+            return Tensor(np.mean(self.data))
+        else:
+            return Tensor(np.mean(self.data), requires_grad=True)
     def __repr__(self):
         return f"Tensor({self.data}, requires_grad={self.requires_grad})"
 
     def __getattr__(self, name):
         """
         Dynamically resolve method names to registered functions.
-        For example, calling `x.mul(y)` will resolve to `Mul.apply(x, y)`
+        For example, calling x.mul(y) will resolve to Mul.apply(x, y)
         """
         def method(*args):
             func_cls = Function.get_function(name)
@@ -238,3 +242,21 @@ class Sum(Function):
         return grad
 
 register('sum', Sum)
+
+class Pow(Function):
+    @staticmethod
+    def forward(ctx, x, y):
+        ctx.save_for_backward(x, y)
+        return Tensor(x.data ** y.data, requires_grad=x.requires_grad or y.requires_grad)
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, y = ctx.saved_tensors
+        grad_x = y.data * grad_output if x.requires_grad else None
+        grad_y = x.data * grad_output if y.requires_grad else None
+        if x.requires_grad:
+            x.grad = grad_x
+        if y.requires_grad:
+            y.grad = grad_y
+        return grad_x, grad_y
+    
+register('pow', Pow)
