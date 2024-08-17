@@ -37,11 +37,10 @@ class Tensor:
         Dynamically resolve method names to registered functions.
         For example, calling `x.mul(y)` will resolve to `Mul.apply(x, y)`
         """
-        def method(*args, **kwargs):
+        def method(*args):
             func_cls = Function.get_function(name)
-            return func_cls.apply(self, *args, **kwargs)
+            return func_cls.apply(self, *args)
         return method
-
 
 class Function:
     _registry = {}  # Class-level dictionary for function registry
@@ -59,10 +58,10 @@ class Function:
         return cls._registry[name]
 
     @classmethod
-    def apply(cls, *tensors, **kwargs):
+    def apply(cls, *tensors):
         """Applies tensors to context."""
         ctx = Context()
-        output = cls.forward(ctx, *tensors, **kwargs)
+        output = cls.forward(ctx, *tensors)
         if isinstance(output, Tensor) and output.requires_grad:
             def backward_fn(grad_output):
                 cls.backward(ctx, grad_output)
@@ -72,7 +71,7 @@ class Function:
         return output
 
     @staticmethod
-    def forward(ctx, *tensors, **kwargs):
+    def forward(ctx, *tensors):
         """Function to be overridden."""
         raise NotImplementedError
 
@@ -80,7 +79,6 @@ class Function:
     def backward(ctx, grad_output):
         """Function to be overridden."""
         raise NotImplementedError
-
 
 class Context:
     def __init__(self):
@@ -102,6 +100,20 @@ def register(name, func_cls):
     
     setattr(Tensor, name, method)
 
+# Function subclasses
+
+class Add(Function):
+    @staticmethod
+    def forward(ctx, x, y):
+        ctx.save_for_backward(x, y)
+        return Tensor(x.data + y.data, requires_grad=x.requires_grad or y.requires_grad)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, grad_output
+    
+register('add', Add)
+
 class Mul(Function):
     @staticmethod
     def forward(ctx, x, y):
@@ -118,27 +130,8 @@ class Mul(Function):
         if y.requires_grad:
             y.grad = grad_y
         return grad_x, grad_y
-    
-register('mul', Mul)
 
-class Add(Function):
-    @staticmethod
-    def forward(ctx, x, y):
-        ctx.save_for_backward(x, y)
-        return Tensor(x.data + y.data, requires_grad=x.requires_grad or y.requires_grad)
-    
-    @staticmethod
-    def backward(ctx, grad_output):
-        x, y = ctx.saved_tensors
-        grad_x = y.data * grad_output if x.requires_grad else None
-        grad_y = x.data * grad_output if y.requires_grad else None
-        if x.requires_grad:
-            x.grad = grad_x
-        if y.requires_grad:
-            y.grad = grad_y
-        return grad_x, grad_y
-    
-register('add', Add)
+register('mul', Mul)
 
 class Dot(Function):
     @staticmethod
@@ -159,70 +152,77 @@ class Dot(Function):
 
 register('dot', Dot)
 
-class ReLU(Function):
+class Max(Function):
     @staticmethod
-    def forward(ctx, input):
-        ctx.save_for_backward(input)
-        return Tensor(np.maximum(input.data, 0), requires_grad=input.requires_grad)
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return Tensor(np.max(x.data, axis=0), requires_grad=x.requires_grad)
     
     @staticmethod
     def backward(ctx, grad_output):
-        input, = ctx.saved_tensors
-        grad_input = grad_output * (input.data > 0)
-        if input.requires_grad:
-            input.grad = grad_input
-        return grad_input
+        x = ctx.saved_tensors[0]
+        grad = np.zeros_like(x.data)
+        max_indices = np.argmax(x.data, axis=0)
+        grad[max_indices] = grad_output
+        if x.requires_grad:
+            x.grad = grad
+        return grad
+
+register('max', Max)
+
+class LogSoftMax(Function):
+    @staticmethod
+    def forward(ctx, x):
+        max_val = np.max(x.data, axis=0)
+        shifted_x = x.data - max_val
+        log_sum_exp = np.log(np.sum(np.exp(shifted_x), axis=0))
+        log_softmax = shifted_x - log_sum_exp
+        ctx.save_for_backward(x, shifted_x, log_sum_exp)
+        return Tensor(log_softmax, requires_grad=x.requires_grad)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, shifted_x, log_sum_exp = ctx.saved_tensors
+        exp_shifted_x = np.exp(shifted_x)
+        sum_exp = np.sum(exp_shifted_x, axis=0)
+        grad = exp_shifted_x / sum_exp - np.exp(log_sum_exp)
+        grad = grad_output - grad * np.sum(grad_output, axis=0)
+        if x.requires_grad:
+            x.grad = grad
+        return grad
+
+register('logsoftmax', LogSoftMax)
+
+class ReLU(Function):
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return Tensor(np.maximum(x.data, 0), requires_grad=x.requires_grad)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        x = ctx.saved_tensors[0]
+        grad = grad_output * (x.data > 0).astype(float)
+        if x.requires_grad:
+            x.grad = grad
+        return grad
 
 register('relu', ReLU)
 
 class Sum(Function):
     @staticmethod
-    def forward(ctx, input):
-        ctx.save_for_backward(input)
-        return Tensor([input.sum], requires_grad=input.requires_grad)
-    
-    @staticmethod
-    def backward(ctx, grad_output):
-        input, = ctx.saved_tensors
-
-        return grad_output * np.ones_like(input)
-    
-register('sum', Sum)
-
-class LogSoftMax(Function):
-    @staticmethod
-    def forward(ctx, input):
-        
-        def logsumexp(x):
-            c = x.max(axis=1)
-            return c+np.log(np.exp(x-c.reshape((-1, 1))).sum(axis=1))
-        output = input - logsumexp(input).reshape((-1, 1))
-        ctx.save_for_backward(output)
-        return Tensor(output, requires_grad=output.requires_grad)
-    @staticmethod
-    def backward(ctx, grad_output):
-        output, = ctx.saved_tensors
-
-        return grad_output - np.exp(output)*grad_output.sum(axis=1).reshape((-1, 1))
-    
-register('logsoftmax', LogSoftMax)
-
-class Max(Function):
-    @staticmethod
     def forward(ctx, x, axis=None):
         ctx.save_for_backward(x)
-        if axis is not None:
-            return Tensor(np.max(x.data, axis=axis), requires_grad=x.requires_grad)
-        else:
-            return Tensor(np.max(x.data), requires_grad=x.requires_grad)
-
+        return Tensor(np.sum(x.data, axis=axis), requires_grad=x.requires_grad)
+    
     @staticmethod
     def backward(ctx, grad_output):
-        input, = ctx.saved_tensors
-        # Create a boolean mask where input is equal to the maximum value
-        mask = (input.data == np.max(input.data))
-        grad_input = grad_output * mask
-        if input.requires_grad:
-            input.grad = grad_input
-        return grad_input
-register('max', Max)
+        x = ctx.saved_tensors[0]
+        if x.requires_grad:
+            grad = np.ones_like(x.data) * grad_output
+            if x.data.ndim > 0:
+                grad = np.reshape(grad, x.data.shape)
+            x.grad = grad
+        return grad
+
+register('sum', Sum)
